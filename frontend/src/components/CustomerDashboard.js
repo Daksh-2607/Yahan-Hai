@@ -1,0 +1,244 @@
+import React, { useEffect, useState } from "react";
+import MapPanel from "./MapPanel";
+import MapPicker from "./MapPicker";
+import { updateUserLocation } from "../api/index.js";
+import { io } from "socket.io-client";
+
+const DEFAULT_CENTER = { lat: 28.6139, lng: 77.2090 };
+
+export default function CustomerDashboard({ user, onLogout, searchTerm = "", filterRole = "retailer" }) {
+  const [mode, setMode] = useState("manual");
+  const [location, setLocation] = useState(
+    user?.location?.lat && user?.location?.lng
+      ? user.location
+      : DEFAULT_CENTER
+  );
+  const [users, setUsers] = useState([]);
+  const [onlineUsers, setOnlineUsers] = useState(new Set());
+  const [showPicker, setShowPicker] = useState(false);
+
+  // Fetch initial users with status
+  // useEffect(() => {
+  //   fetch('/api/users/with-status')
+  //     .then(res => res.json())
+  //     .then(data => setUsers(data.filter(u => u.location)));
+  // }, []);
+
+  // Socket.IO connection for real-time updates
+  useEffect(() => {
+    if (!user) return;
+  
+    // Connect to the socket
+    const socketUrl = process.env.REACT_APP_SOCKET_URL || 'http://localhost:5000';
+    const socket = io(socketUrl, {
+      query: { userId: user._id }
+    });
+    socket.on('connect', () => {
+      socket.emit('join-room', user.role);
+    });
+  
+    // Start heartbeat: send 'heartbeat' every 5 seconds
+    const heartbeatInterval = setInterval(() => {
+      socket.emit('heartbeat');
+    }, 5000);
+  
+    // Listen for active users (with online status)
+    socket.on('active-users', (activeUsers) => {
+      setUsers(activeUsers);
+      // Initialize onlineUsers state
+      const initialOnline = new Set(
+        activeUsers.filter(u => u.isOnline).map(u => u._id)
+      );
+      setOnlineUsers(initialOnline);
+    });
+  
+    // Listen for real-time status changes
+    socket.on('user-status-changed', ({ userId, isOnline, user: eventUser }) => {
+      setOnlineUsers(prev => {
+        const newSet = new Set(prev);
+        isOnline ? newSet.add(userId) : newSet.delete(userId);
+        return newSet;
+      });
+
+      if (isOnline && eventUser && eventUser.location && eventUser.location.lat) {
+        if (eventUser.role !== user.role) {
+          setUsers(prev => {
+            const exists = prev.find(u => u?._id === userId);
+            if (exists) {
+              return prev.map(u => u?._id === userId ? { ...eventUser, isOnline: true } : u);
+            }
+            return [...prev, { ...eventUser, isOnline: true }];
+          });
+        }
+      }
+    });
+  
+    // Listen for location updates
+    socket.on('location-update', (updatedUser) => {
+      setUsers(prev => {
+        const exists = prev.find(u => u?._id === updatedUser._id);
+        if (exists) {
+          return prev.map(u => u?._id === updatedUser._id ? updatedUser : u);
+        }
+        return [...prev, updatedUser];
+      });
+    });
+  
+    // Listen for user logout
+    socket.on('user-logged-out', (userId) => {
+      setUsers(prev => prev.filter(u => u._id !== userId));
+    });
+  
+    // Clean up on unmount
+    return () => {
+      clearInterval(heartbeatInterval);
+      socket.disconnect();
+    };
+  }, [user?._id]);
+  
+
+  // Set location (for both manual and live mode)
+  const handleLocationChange = (lat, lng) => {
+    setLocation({ lat, lng });
+    updateUserLocation(user._id, lat, lng);
+  };
+
+  // Live location updates
+  useEffect(() => {
+    let watchId;
+    if (mode === "live" && navigator.geolocation && user) {
+      watchId = navigator.geolocation.watchPosition(
+        (pos) => {
+          const newLoc = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+          handleLocationChange(newLoc.lat, newLoc.lng);
+        },
+        () => {}
+      );
+    }
+    return () => {
+      if (watchId) navigator.geolocation.clearWatch(watchId);
+    };
+  }, [mode, user]);
+
+  // Send location updates every 5 seconds, regardless of mode
+  useEffect(() => {
+    let intervalId;
+    if (user && location) {
+      // Send immediately
+      updateUserLocation(user._id, location.lat, location.lng);
+      // Then every 5 seconds
+      intervalId = setInterval(() => {
+        updateUserLocation(user._id, location.lat, location.lng);
+      }, 5000);
+    }
+    return () => {
+      if (intervalId) clearInterval(intervalId);
+    };
+  }, [user, location]);
+
+  if (!user) {
+    return <div>Loading...</div>;
+  }
+
+  const handleManualLocation = async (latlng) => {
+    setShowPicker(false);
+    setMode("manual");
+    handleLocationChange(latlng.lat, latlng.lng);
+  };
+
+  const handleLogout = async () => {
+    const socketUrl = process.env.REACT_APP_SOCKET_URL || 'http://localhost:5000';
+    const tempSocket = io(socketUrl);
+    tempSocket.emit('user-logged-out', user._id);
+    setTimeout(() => tempSocket.disconnect(), 1000);
+    onLogout();
+  };
+
+  // Filter users based on searchTerm and filterRole
+  const filteredMarkers = users
+    .filter(u => u && u.location && u.location.lat && u.location.lng)
+    .filter(u => {
+      // Apply role filter
+      if (filterRole !== "all" && u.role !== filterRole) return false;
+      // Apply search filter
+      if (!searchTerm) return true;
+      const term = searchTerm.toLowerCase();
+      return (
+        (u.name && u.name.toLowerCase().includes(term)) ||
+        (u.shopName && u.shopName.toLowerCase().includes(term)) ||
+        (u.city && u.city.toLowerCase().includes(term))
+      );
+    })
+    .map(u => ({
+      ...u,
+      lat: u.location.lat,
+      lng: u.location.lng,
+      isOnline: onlineUsers.has(u._id)
+    }));
+
+  return (
+    <div style={{ maxWidth: 1200, margin: "0 auto", padding: 24 }}>
+      <div className="dashboard-header">
+        <div className="dashboard-header-content">
+          <h1>
+            Welcome back, {user.name}!
+          </h1>
+          <p className="dashboard-subtitle">
+            {user.role === 'retailer'
+              ? "Manage your store, connect with customers, and track your business performance."
+              : "Explore local businesses, discover new offers, and connect with retailers near you."}
+          </p>
+        </div>
+      </div>
+
+      <div className="location-btn-group">
+        <button
+          className={`location-btn${mode === "live" ? " primary" : ""}`}
+          onClick={() => setMode("live")}
+        >
+          Share My Live Location
+        </button>
+        <button
+          className={`location-btn${mode === "manual" ? " primary" : ""}`}
+          onClick={() => setShowPicker(true)}
+        >
+          Set Location Manually
+        </button>
+      </div>
+      {showPicker && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            width: "100vw",
+            height: "100vh",
+            background: "rgba(0,0,0,0.5)",
+            zIndex: 1000,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          <div
+            style={{ background: "#fff", borderRadius: 12, padding: 24, minWidth: 350 }}
+          >
+            <h3>Set Your Location</h3>
+            <MapPicker
+              initialCenter={location}
+              avatarUser={user}
+              onConfirm={handleManualLocation}
+              onCancel={() => setShowPicker(false)}
+            />
+          </div>
+        </div>
+      )}
+      <MapPanel
+        location={location}
+        markers={filteredMarkers}
+        role={user.role}
+        user={user}
+      />
+    </div>
+  );
+}
