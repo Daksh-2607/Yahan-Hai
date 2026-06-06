@@ -1,0 +1,33 @@
+version: '3.9'
+services:
+  mongo:
+    image: mongo:6.0
+    container_name: yahanhai-mongo
+    ports:
+      - "27017:27017"
+    volumes:
+      - yahanhai-mongo-data:/data/db
+    environment:
+      - MONGO_INITDB_DATABASE=yahanhai
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: yahanhai-backend
+    ports:
+      - "5000:5000"
+    environment:
+      - PORT=5000
+      - MONGO_URI=mongodb://mongo:27017/yahanhai
+      - CLIENT_URL=http://localhost:3000
+      - JWT_SECRET=your_jwt_secret_here
+    depends_on:
+      - mongo
+    volumes:
+      - ./:/usr/src/app
+      - /usr/src/app/node_modules
+    command: npm run dev
+
+volumes:
+  yahanhai-mongo-data:

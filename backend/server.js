@@ -42,9 +42,6 @@ async function migrateUserLocationRoles() {
 }
 
 const cookieParser = require('cookie-parser');
-connectDB().then(() => {
-  migrateUserLocationRoles();
-});
 
 const app = express();
 const corsOptions = {
@@ -287,7 +284,15 @@ io.on('connection', (socket) => {
 
 const PORT = process.env.PORT || 5000;
 
-server.listen(PORT, () => {
-  console.log('MongoDB connected!');
-  console.log('Server running on port ' + PORT);
-});
+connectDB()
+  .then(async () => {
+    await migrateUserLocationRoles();
+    server.listen(PORT, () => {
+      console.log('MongoDB connected!');
+      console.log('Server running on port ' + PORT);
+    });
+  })
+  .catch((error) => {
+    console.error('Failed to connect to MongoDB, aborting server start.', error.message || error);
+    process.exit(1);
+  });
